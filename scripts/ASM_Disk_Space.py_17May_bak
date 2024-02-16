@@ -1,0 +1,339 @@
+"""
+	Name: ASM_Disk_Space_test_v5.py
+	Description: To generate ASM disk space report, remote target server or local target server
+	Team: Software Service Automation
+	Author: Arnab Roy(arnab.d.roy@capgemini.com)
+	Inputs: Arguments [HostName,Username,Password,SID], LogFileLoc
+	Output: ExitCode, ExitDesc(Log File)
+"""
+
+#!/usr/bin/env python
+from sys import path
+import sys
+from Logger import Logger
+import Logger as log
+import time
+import datetime
+from os import system, getcwd, path, makedirs
+import paramiko
+import os
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from datetime import datetime
+
+
+
+
+################################### Creating Log File ###############################
+try:
+	if os.name == 'nt':
+		logdir = os.getcwd()+"\\logs"
+	if os.name == 'posix':
+		logdir = os.getcwd()+"/logs"
+	
+	logfile = "ASM_Disk_Space_Report.log"
+	log = Logger(logdir,logfile)
+
+	log.info('*************************************************************************')
+
+	log.info('Started Script Execution')
+	
+except Exception, e:
+    print "ExitCode: 10"
+    print "ExitDesc: Unable to create Logfile {0}".format(logfile)
+
+
+
+
+
+try:
+    
+	if len(sys.argv) == 6:
+		Execution_Location=sys.argv[1]
+		HostName = sys.argv[2] 
+		OSUser = sys.argv[3] 
+		OSPassword = sys.argv[4]
+		Sid=sys.argv[5]
+		tableHtml5=""
+
+		############################ For Remote execution ##########################
+	
+		if Execution_Location=="REMOTE":
+			command = """cat /etc/oratab | sed '/^$/d' | grep -v '#' | awk -F ':' '{print $1":"$2}'"""
+			dssh = paramiko.SSHClient()
+			dssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+			dssh.connect(HostName, username=OSUser, password=OSPassword)
+			stdin, stdout, stderr = dssh.exec_command(command)
+			output = stdout.read()
+			errout = stderr.read()
+			sid_home_out = str(output).translate(None, "\r")
+			a=sid_home_out.split('\n')
+
+
+			for i in a:
+				if Sid in i:
+					Ora_Home_Sid=i
+			if Ora_Home_Sid:
+				Ora_home=Ora_Home_Sid.split(":")[1]
+				Ora_Sid=Ora_Home_Sid.split(":")[0]
+				loginline="sqlplus -s / as sysdba"
+				env_var = """
+			ORACLE_SID={0}
+			export ORACLE_SID
+			ORACLE_HOME={1}
+			export ORACLE_HOME
+			export PATH=$ORACLE_HOME/bin:$PATH""".format(Ora_Sid,Ora_home)
+						
+				command1="""col NAME for a35 
+				select name,decode(type,'NORMAL',2,'HIGH',3,'EXTERN',1) Redundancy, (total_mb/decode(type,'NORMAL',2,'HIGH',3,'EXTERN',1)) Total_MB,(free_mb/decode(type,'NORMAL',2,'HIGH',3,'EXTERN',1)) Free_MB,((free_mb/decode(type,'NORMAL',2,'HIGH',3,'EXTERN',1))/(total_mb/decode(type,'NORMAL',2,'HIGH',3,'EXTERN',1)))*100 "%Free" from v\$asm_diskgroup;"""
+				ucommand = "%s\n%s/bin/%s << EOF\nset heading off;\nset feedback off;\n%s\nexit;\nEOF\nEOF1" %(env_var,Ora_home,loginline,command1)
+				stdin, stdout, stderr = dssh.exec_command(ucommand)
+				output=stdout.read()
+				log.info('The command is %s'%(ucommand))
+				log.info('the output is %s'%(output))
+
+				print "NAME				REDUNDANCY	  TOTAL_MB    FREE_MB	%FREE"
+				print output
+
+				if output:
+					output=output.strip(' \t\n\r')
+
+					if "ERROR" not in output:
+						allLines=""
+						tableHtml5=""
+						tablestrt="	<table><tr><th> Name </th><th> Redundancy </th><th> Total_MB </th><th> Free_MB </th><th> %Free </th></tr>"
+						outx=output.splitlines()
+						print outx
+						for i in outx:
+							i=i.split()
+							i0=str(i[0])
+							i1=str(i[1])
+							i2=str(i[2])
+							i3=str(i[3])
+							i4=str(i[4])
+
+							beginning="<tr style='background-color:white;'>"
+							bodyEl ="<td style='text-align:center;'> " + i0 + " </td>"
+							bodyEl+="<td style='text-align:center;'> " + i1 + " </td>"
+							bodyEl+="<td style='text-align:center;'> " + i2 + " </td>"
+							bodyEl+="<td style='text-align:center;'> " + i3 + " </td>"
+							bodyEl+="<td style='text-align:center;'> " + i4 + " </td>"
+							end="</tr>"
+							allLines+=beginning+bodyEl+end
+						tableBody=allLines
+						tableEnd="</table>"
+						tableHtml5=tablestrt+tableBody+tableEnd 
+
+						log.info('ExitCode: 0')
+						log.info("ExitDesc: ASM Disk Space Report generated")
+						print "ExitCode: 0"
+						print "ExitDesc: ASM Disk Space Report generated"
+						Status="Successful Execution"
+					else:
+						print "ExitCode: 1"
+						print "ExitDesc: Error Occured:%s"%output
+						Status="Some error Occured. Check logs"
+				
+				else:
+					Status="No view Present"
+					print "ExitCode: 1"
+					print "ExitDesc: No view Present "
+					log.info("ExitCode: 1")
+					log.info("ExitDesc: No view Present ")
+			
+			else:
+				log.info("ExitCode: 10")
+				log.info("ExitDesc: Fetching Oracle SID and ORACLE_HOME Failed")
+				print "ExitCode: 10"
+				print "ExitDesc: Fetching Oracle SID and ORACLE_HOME Failed"
+				Status="Some error Occured. Check logs"
+		
+		
+		########################################################### For Local execution ########################################################################
+		
+		
+		elif Execution_Location == "LOCAL":
+			Ora_Home_Sid=""
+			sidhome = """cat /etc/oratab | sed '/^$/d' | grep -v '#' | awk -F ':' '{print $1":"$2}'"""
+			sid_home_out=os.popen(sidhome).read()
+			sid_home_out = str(sid_home_out).translate(None, "\r")
+			a=sid_home_out.split('\n')
+			for i in a:
+				if Sid in i:
+					Ora_Home_Sid=i
+			if Ora_Home_Sid:
+				Ora_home=Ora_Home_Sid.split(":")[1]
+				Ora_Sid=Ora_Home_Sid.split(":")[0]
+				loginline="sqlplus -s / as sysdba"
+				env_var = """
+				ORACLE_SID={0}
+				export ORACLE_SID
+				ORACLE_HOME={1}
+				export ORACLE_HOME
+				export PATH=$ORACLE_HOME/bin:$PATH""".format(Ora_Sid,Ora_home)
+					
+					
+				command="""col NAME for a35 
+			select name,decode(type,'NORMAL',2,'HIGH',3,'EXTERN',1) Redundancy, (total_mb/decode(type,'NORMAL',2,'HIGH',3,'EXTERN',1)) Total_MB,(free_mb/decode(type,'NORMAL',2,'HIGH',3,'EXTERN',1)) Free_MB,((free_mb/decode(type,'NORMAL',2,'HIGH',3,'EXTERN',1))/(total_mb/decode(type,'NORMAL',2,'HIGH',3,'EXTERN',1)))*100 "%Free" from v\$asm_diskgroup;"""
+				ucommand = "%s\n%s/bin/%s << EOF\nset heading off;\nset feedback off;\n%s\nexit;\nEOF" %(env_var,Ora_home,loginline,command)
+				output = os.popen(ucommand).read()
+				
+				if output:
+					if "ERROR" not in output:
+						
+						print "NAME				REDUNDANCY	  TOTAL_MB    FREE_MB	%FREE"
+						print output
+						output=output.strip(' \t\n\r')
+						
+						allLines=""
+						tableHtml5=""
+						tablestrt="	<table><tr><th> Name </th><th> Redundancy </th><th> Total_MB </th><th> Free_MB </th><th> %Free </th></tr>"
+						outx=output.splitlines()
+
+						for i in outx:
+							i=i.split()
+							i0=str(i[0])
+							i1=str(i[1])
+							i2=str(i[2])
+							i3=str(i[3])
+							i4=str(i[4])
+
+							beginning="<tr style='background-color:white;'>"
+							bodyEl ="<td style='text-align:center;'> " + i0 + " </td>"
+							bodyEl+="<td style='text-align:center;'> " + i1 + " </td>"
+							bodyEl+="<td style='text-align:center;'> " + i2 + " </td>"
+							bodyEl+="<td style='text-align:center;'> " + i3 + " </td>"
+							bodyEl+="<td style='text-align:center;'> " + i3 + " </td>"
+							end="</tr>"
+							allLines+=beginning+bodyEl+end
+						tableBody=allLines
+						tableEnd="</table>"
+						tableHtml5=tablestrt+tableBody+tableEnd 
+				
+
+						log.info('ExitCode: 0')
+						log.info("ExitDesc: ASM Disk Space Report generated")
+						print "ExitCode: 0"
+						print "ExitDesc: ASM Disk Space Report generated"
+						Status="Successful Execution"
+					else:
+						print "ExitCode: 1"
+						print "ExitDesc: Error Occured:%s"%output
+						log.info('ExitCode: 1')
+						log.info('ExitDesc: Error Occured:%s'%output)
+						Status="Some error Occured. Check logs"
+				
+				else:
+					log.info('No rows affected')
+					print "No output found"
+					Status="Successful Execution. \n No output for %s" %command
+					
+			else:
+				log.info("ExitCode: 10")
+				log.info("ExitDesc: Fetching Oracle SID and ORACLE_HOME Failed")
+				print "ExitCode: 10"
+				print "ExitDesc: Fetching Oracle SID and ORACLE_HOME Failed"
+				Status="Some error Occured. Check logs"
+				
+		else:
+			print "ExitCode: 10"
+			print "ExitDesc: Enter proper Execution_Location input"
+			log.info("ExitCode:10")
+			log.info("ExitDesc: Enter proper Execution_Location input")
+			Status="Error Occurred."
+			
+
+	else:
+		print "ExitCode: 10"
+		print "ExitDesc: Missing Arguments"
+		log.info('ExitCode:10')
+		log.info('ExitDesc: Missing Arguments')
+		Status="Error Occurred"
+		
+except Exception, e:
+	print "ExitCode: 10"
+	print "ExitDesc: script failed due to: {0}".format(e)
+	log.info('ExitCode: 10')
+	log.info('ExitDesc: Error Occurred. Check Logs')
+	Status="Error Occured"
+	
+	
+################################ Mail part ##################################
+
+now = datetime.now()
+dt = now.strftime("%A,%d-%B-%y")
+dt=str(dt)
+FROM  = 'administrator@ssautomation.com'
+TO = 'administrator@ssautomation.com'
+
+SUBJECT = ' ASM DISK SPACE REPORT '
+body ="""
+<html>
+<H2> Database Status for %s </H2>
+<style>
+  table, th, td {
+	border: 2px solid cyan;
+	}
+th, td {
+	padding: 10px;
+}
+th {
+	background-color:#f1f1c1;
+}
+body {
+	margin-left: 5px;
+	margin-top: 5px;
+	margin-right: 0px;
+	margin-bottom: 10px;
+	table {
+	border: thin solid #000000;
+}
+</style>
+
+<TABLE>
+<TR>
+<TH>  Execution Type  </TH>
+<TH>  Server Name  </TH>
+<TH>  SID or Database name  </TH>
+<TH>  Status  </TH>
+<TH>  Output  </TH>
+
+</TR>
+<TR>
+<TD>  %s  </TD>
+<TD>  %s  </TD>
+<TD>  %s  </TD>
+<TD>  %s  </TD>
+<TD>  %s  </TD>
+
+</TR> 
+</TABLE>
+</BODY>
+</HTML>""" %(dt,Execution_Location,HostName,Sid,Status,tableHtml5)
+	# Prepare actual message
+	
+part1="""From: Administrator <administrator@ssautomation.com>
+To: Administrator <administrator@ssautomation.com>
+Subject: %s
+Content-Type: multipart/mixed;
+""" %SUBJECT
+
+part2 = """Content-Type: text/html
+%s
+""" %body
+
+
+message = part1 + part2
+
+
+try:
+	client = smtplib.SMTP('centex.ssautomation.com')
+	client.sendmail(FROM, TO, message)
+	client.quit()
+	print "Email sent"
+	log.info('Email Sent')
+	
+except Exception, e:
+	print "Email sending failed due to: {0}".format(e)
+	log.info('Email sending failed due to: {0}'.format(e))
